@@ -14,7 +14,16 @@ import air  # noqa: E402  제주 미세먼지(공공데이터) 모듈
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SECRET_KEY", "")  # 두 이름 모두 허용
 # 허용할 프론트 주소 (쉼표로 여러 개). 배포 시에는 Vercel 주소를 넣는다.
-FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:5500,http://127.0.0.1:5500")
+#  - FRONT_ORIGIN 또는 FRONT_ORIGINS 어느 이름으로 넣어도 읽는다.
+#  - 값이 비었거나 빠져도 로컬 주소는 항상 허용한다.
+#  - day3-frontend*.vercel.app (배포마다 바뀌는 미리보기 주소 포함)은 정규식으로 허용한다.
+_front = ",".join(filter(None, [os.getenv("FRONT_ORIGIN", ""), os.getenv("FRONT_ORIGINS", "")]))
+FRONT_ORIGIN = _front or "http://localhost:5500,http://127.0.0.1:5500"
+_origins = [o.strip().rstrip("/") for o in FRONT_ORIGIN.split(",") if o.strip()]
+for _local in ("http://localhost:5500", "http://127.0.0.1:5500"):
+    if _local not in _origins:
+        _origins.append(_local)
+ORIGIN_REGEX = r"https://day3-frontend[a-z0-9-]*\.vercel\.app"
 
 FREE_FROM = 30000   # 이 금액 이상이면 배송비 무료
 SHIPPING_FEE = 3000
@@ -24,7 +33,8 @@ app.include_router(air.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in FRONT_ORIGIN.split(",") if o.strip()],
+    allow_origins=_origins,
+    allow_origin_regex=ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
 )
