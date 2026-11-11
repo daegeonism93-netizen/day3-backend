@@ -7,17 +7,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import create_client
 
-load_dotenv()  # 로컬에서는 .env, Railway에서는 대시보드 Variables 사용
+load_dotenv()  # 로컬에서는 .env, Railway에서는 대시보드 Variables 사용 (air 모듈보다 먼저 읽어야 함)
+
+import air  # noqa: E402  제주 미세먼지(공공데이터) 모듈
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SECRET_KEY", "")  # 두 이름 모두 허용
 # 허용할 프론트 주소 (쉼표로 여러 개). 배포 시에는 Vercel 주소를 넣는다.
 FRONT_ORIGIN = os.getenv("FRONT_ORIGIN", "http://localhost:5500,http://127.0.0.1:5500")
 
 FREE_FROM = 30000   # 이 금액 이상이면 배송비 무료
 SHIPPING_FEE = 3000
 
-app = FastAPI(title="day3 backend")
+app = FastAPI(title="day3 backend", lifespan=air.lifespan)
+app.include_router(air.router)
 
 app.add_middleware(
     CORSMiddleware,
