@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Query
 
@@ -47,20 +47,64 @@ def run_collect(hours: int = 1) -> dict:
     return entry
 
 
+BACKFILL_MIN = 24  # 측정소별로 이 개수보다 적게 쌓여 있으면 과거 24시간을 채운다
+
+
+def run_backfill(only_missing: bool = True) -> dict:
+    """측정소별 최근 24시간 기록을 받아 DB에 채운다 (이미 있는 시각은 덮어써서 중복 없음)."""
+    if DEMO:
+        return {"skipped": "연습 모드에서는 필요 없어요"}
+    stations = sorted({i["stationName"] for i in collect.fetch_raw(SIDO, DATA_KEY)
+                       if i.get("stationName")})
+    total = {"fetched": 0, "fixed_values": 0, "dropped": 0, "cleaned": 0}
+    saved, done = 0, 0
+    for st in stations:
+        if only_missing and len(store.history(SOURCE, st)) >= BACKFILL_MIN:
+            continue
+        try:
+            rows, stats = collect.clean(collect.fetch_station_history(st, DATA_KEY), SIDO, SOURCE)
+        except Exception:
+            log.exception("과거 기록 채우기 실패: %s", st)
+            continue
+        saved += store.save_readings(rows)
+        for k in total:
+            total[k] += stats[k]
+        done += 1
+    entry = {"ran_at": datetime.now(timezone.utc).isoformat(), "source": SOURCE,
+             **total, "saved": saved}
+    if done:
+        store.save_log(entry)
+    log.info("backfill stations=%s %s", done, entry)
+    return {"stations_filled": done, "stations_total": len(stations), **entry}
+
+
+def _seconds_until_next_run() -> float:
+    """COLLECT_MINUTES=60이면 매 시각 10분(KST)에 맞춰 수집 -> 하루에 24번, 같은 시각 기록이 쌓인다."""
+    if MINUTES != 60:
+        return MINUTES * 60
+    now = datetime.now(collect.KST)
+    nxt = now.replace(minute=10, second=0, microsecond=0)
+    if nxt <= now:
+        nxt += timedelta(hours=1)
+    return (nxt - now).total_seconds()
+
+
 async def auto_loop():
-    """서버가 켜져 있는 동안 COLLECT_MINUTES마다 자동 수집 (브라우저가 꺼져 있어도!)"""
-    # 연습 모드에서 DB가 비어 있으면 예측을 바로 볼 수 있게 72시간치를 한 번 채운다
+    """서버가 켜져 있는 동안 정해진 시각마다 자동 수집 (브라우저가 꺼져 있어도!)"""
+    # 처음 켜질 때: DB가 비어 있으면 예측을 바로 볼 수 있게 과거 기록을 먼저 채운다
     try:
         if DEMO and not store.recent(SOURCE, 1):
             await asyncio.to_thread(run_collect, 72)
+        elif not DEMO:
+            await asyncio.to_thread(run_backfill)
     except Exception:
-        log.exception("초기 연습 데이터 채우기 실패")
+        log.exception("초기 데이터 채우기 실패")
     while True:
         try:
             await asyncio.to_thread(run_collect)
         except Exception:
             log.exception("자동 수집 실패")
-        await asyncio.sleep(MINUTES * 60)
+        await asyncio.sleep(_seconds_until_next_run())
 
 
 @asynccontextmanager
@@ -91,6 +135,31 @@ def collect_now(x_admin_token: str = Header(default=""),
         return run_collect(hours if DEMO else 1)
     except Exception as e:
         raise HTTPException(502, str(e))
+
+
+@router.post("/backfill")
+def backfill_now(x_admin_token: str = Header(default=""),
+                 force: bool = Query(False, description="true면 이미 충분히 쌓인 측정소도 다시 받음")):
+    """측정소별 과거 24시간 기록을 지금 DB에 채운다"""
+    if not ADMIN_TOKEN:
+        raise HTTPException(503, "Railway Variables에 ADMIN_TOKEN을 먼저 넣으세요")
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(401, "x-admin-token이 틀렸습니다")
+    try:
+        return run_backfill(only_missing=not force)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@router.get("/air/history")
+def air_history(station: str, hours: int = Query(48, ge=1, le=168)):
+    """DB에 쌓인 시간별 기록(시계열)과, 그 기록으로 만든 다음 1시간 예측"""
+    hist = store.history(SOURCE, station, limit=hours)
+    if not hist:
+        raise HTTPException(404, f"'{station}' 측정소 데이터가 없습니다")
+    points = [{"time": db.kst(h["data_time"]), "pm10": h["pm10"], "pm25": h["pm25"]} for h in hist]
+    return {"station": station, "mode": SOURCE, "count": len(points), "points": points,
+            "prediction": predict.predict_next(hist)}
 
 
 def _latest_rows():

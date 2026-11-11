@@ -42,6 +42,35 @@ def fetch_raw(sido: str, service_key: str) -> list[dict]:
     return body["body"].get("items") or []
 
 
+HISTORY_URL = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+
+
+def fetch_station_history(station: str, service_key: str) -> list[dict]:
+    """한 측정소의 '최근 24시간' 시간별 기록을 받아 온다 (과거 데이터 채우기용).
+    이 API는 응답에 측정소 이름이 없어서 우리가 붙여 준다."""
+    params = {
+        "serviceKey": unquote(service_key),
+        "returnType": "json",
+        "numOfRows": "100",
+        "pageNo": "1",
+        "stationName": station,
+        "dataTerm": "DAILY",
+        "ver": "1.0",
+    }
+    r = httpx.get(HISTORY_URL, params=params, timeout=30)
+    r.raise_for_status()
+    text = r.text.strip()
+    if not text.startswith("{"):
+        raise RuntimeError("공공데이터 API 오류(키 확인): " + text[:200])
+    body = r.json()["response"]
+    if body["header"].get("resultCode") != "00":
+        raise RuntimeError("공공데이터 API 오류: " + str(body["header"]))
+    items = body["body"].get("items") or []
+    for it in items:
+        it["stationName"] = station
+    return items
+
+
 # ─────────────────────────────────────────────
 # 1') 연습용 가짜 원본 - API 키 승인 전에도 실습할 수 있게
 #     (진짜 API처럼 일부러 지저분하게 만든다)
