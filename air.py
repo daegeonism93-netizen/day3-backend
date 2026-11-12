@@ -20,6 +20,7 @@ from fastapi import APIRouter, FastAPI, Header, HTTPException, Query
 import air_collect as collect
 import air_db as db
 import air_predict as predict
+import stations  # [지도] 측정소 좌표 + 가장 가까운 측정소 찾기
 
 log = logging.getLogger("uvicorn.error")
 
@@ -172,13 +173,29 @@ def _latest_rows():
     return latest
 
 
+def _view(r):
+    """측정소 한 줄 -> 화면용 모양. [지도] 좌표 lat, lng 를 덧붙인다 (표에 없으면 null)."""
+    c = stations.coord(r["station"])
+    return {"station": r["station"], "time": db.kst(r["data_time"]),
+            "pm10": r["pm10"], "pm10_grade": r["pm10_grade"],
+            "pm25": r["pm25"], "pm25_grade": r["pm25_grade"],
+            "lat": c[0] if c else None, "lng": c[1] if c else None}
+
+
 @router.get("/air/latest")
 def air_latest():
     rows = _latest_rows()
     rows.sort(key=lambda r: r["pm10"] or 0, reverse=True)
-    return [{"station": r["station"], "time": db.kst(r["data_time"]),
-             "pm10": r["pm10"], "pm10_grade": r["pm10_grade"],
-             "pm25": r["pm25"], "pm25_grade": r["pm25_grade"]} for r in rows]
+    return [_view(r) for r in rows]
+
+
+@router.get("/air/near")
+def air_near(lat: float = Query(..., ge=-90, le=90), lng: float = Query(..., ge=-180, le=180)):
+    """[지도] 지도에서 누른 지점 -> 가장 가까운 측정소의 최신 미세먼지 + 거리(km)"""
+    row, km = stations.nearest(lat, lng, _latest_rows())
+    if not row:
+        raise HTTPException(404, "좌표가 있는 측정소 데이터가 아직 없습니다")
+    return {**_view(row), "distance_km": round(km, 1)}
 
 
 @router.get("/air/summary")
